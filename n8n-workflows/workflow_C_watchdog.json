@@ -1,0 +1,253 @@
+{
+  "name": "Email Bot — C: Watchdog & Daily Reset",
+  "nodes": [
+    {
+      "id": "node-hourly-trigger",
+      "name": "Hourly Health Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 1 }]
+        }
+      }
+    },
+    {
+      "id": "node-midnight-trigger",
+      "name": "Midnight Daily Reset",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 500],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-check-failures",
+      "name": "Check for Failures",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [420, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COUNT(*) as failed_count FROM email_logs WHERE status='failed' AND updated_at > NOW()-INTERVAL '1 hour'; SELECT COUNT(*) as pending_stale FROM email_logs WHERE approval_status='PENDING' AND created_at < NOW()-INTERVAL '2 hours'; SELECT COUNT(*) as stuck_processing FROM email_logs WHERE status='processing' AND created_at < NOW()-INTERVAL '30 minutes';",
+        "options": {}
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-check-groq",
+      "name": "Ping Groq API Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [420, 420],
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.groq.com/openai/v1/models",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 8000,
+          "response": {
+            "response": { "neverError": true }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": { "id": "3", "name": "Groq API Key" }
+      }
+    },
+    {
+      "id": "node-build-alert",
+      "name": "Build Alert Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 360],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const dbResult   = $('Check for Failures').all();\nconst groqResult  = $('Ping Groq API Health').first().json;\n\nconst failedCount    = parseInt(dbResult[0]?.json?.failed_count || 0);\nconst stalePending   = parseInt(dbResult[1]?.json?.pending_stale || 0);\nconst stuckProc      = parseInt(dbResult[2]?.json?.stuck_processing || 0);\nconst groqOk         = groqResult.statusCode !== 401 && !groqResult.error;\n\nconst issues = [];\nif (failedCount > 0)  issues.push(`⚠ ${failedCount} email(s) FAILED in the last hour`);\nif (stalePending > 0) issues.push(`⏰ ${stalePending} email(s) waiting approval for >2 hours — check Google Sheets`);\nif (stuckProc > 0)    issues.push(`🔄 ${stuckProc} email(s) stuck in 'processing' >30 min`);\nif (!groqOk)          issues.push('🚨 Groq API is UNREACHABLE — Ollama fallback may be needed');\n\nconst shouldAlert = issues.length > 0;\nconst timestamp   = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });\n\nconst alertBody = shouldAlert\n  ? `Email Bot Health Alert — ${timestamp}\\n\\nIssues detected:\\n${issues.map(i => '• ' + i).join('\\n')}\\n\\nAction: Log into http://localhost:5678 to investigate.\\n\\n— Your Email Bot Watchdog`\n  : '';\n\nreturn [{ json: { should_alert: shouldAlert, alert_body: alertBody, issues_count: issues.length } }];"
+      }
+    },
+    {
+      "id": "node-if-alert",
+      "name": "Issues Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [860, 360],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "alert-check",
+              "leftValue": "={{ $json.should_alert }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-send-alert",
+      "name": "Send Alert Email to Yourself",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1080, 280],
+      "parameters": {
+        "fromEmail": "reddykrishnakrishna548@gmail.com",
+        "toEmail":   "reddykrishnakrishna548@gmail.com",
+        "subject":   "🚨 Email Bot Alert — Action Required",
+        "text":      "={{ $json.alert_body }}",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": { "id": "5", "name": "Gmail SMTP" }
+      }
+    },
+    {
+      "id": "node-retry-failed",
+      "name": "Re-Queue Failed Emails",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1080, 420],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE email_logs SET status='processing', send_attempts=send_attempts+1 WHERE status='failed' AND send_attempts < 3 AND updated_at < NOW()-INTERVAL '1 hour'; UPDATE email_logs SET status='failed_permanent' WHERE status='failed' AND send_attempts >= 3;",
+        "options": {}
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-fix-stuck",
+      "name": "Unstick Stuck Processing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1080, 520],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE email_logs SET status='failed', last_error='Stuck in processing for >30 min — auto-reset by watchdog' WHERE status='processing' AND created_at < NOW()-INTERVAL '30 minutes';",
+        "options": {}
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-daily-reset",
+      "name": "Reset Daily Send Counters",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [420, 580],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE accounts SET daily_send_count=0, last_reset_date=CURRENT_DATE WHERE last_reset_date < CURRENT_DATE; SELECT reset_daily_send_counts();",
+        "options": {}
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-daily-analytics",
+      "name": "Write Daily Stats to Sheets",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [640, 580],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT day::text, total_processed, sent, rejected, loops_blocked, failed, spam_detected, leads_detected, avg_sentiment::text, total_tokens FROM v_daily_stats WHERE day = CURRENT_DATE - 1;",
+        "options": {}
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-append-analytics",
+      "name": "Append to Analytics Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [860, 580],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1hbONbpY1YBOOi1dOIjUkG8khfJbG2E8ojhisGRIDdUA",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Analytics",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date":             "={{ $json.day }}",
+            "Total Processed":  "={{ $json.total_processed }}",
+            "Sent":             "={{ $json.sent }}",
+            "Rejected":         "={{ $json.rejected }}",
+            "Loops Blocked":    "={{ $json.loops_blocked }}",
+            "Failed":           "={{ $json.failed }}",
+            "Spam Detected":    "={{ $json.spam_detected }}",
+            "Leads":            "={{ $json.leads_detected }}",
+            "Avg Sentiment":    "={{ $json.avg_sentiment }}",
+            "Total AI Tokens":  "={{ $json.total_tokens }}"
+          }
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "4", "name": "Google Sheets Service Account" }
+      }
+    }
+  ],
+
+  "connections": {
+    "Hourly Health Check": {
+      "main": [
+        [
+          { "node": "Check for Failures", "type": "main", "index": 0 },
+          { "node": "Ping Groq API Health", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Midnight Daily Reset": {
+      "main": [[{ "node": "Reset Daily Send Counters", "type": "main", "index": 0 }]]
+    },
+    "Check for Failures": {
+      "main": [[{ "node": "Build Alert Message", "type": "main", "index": 0 }]]
+    },
+    "Ping Groq API Health": {
+      "main": [[{ "node": "Build Alert Message", "type": "main", "index": 0 }]]
+    },
+    "Build Alert Message": {
+      "main": [[{ "node": "Issues Found?", "type": "main", "index": 0 }]]
+    },
+    "Issues Found?": {
+      "main": [
+        [
+          { "node": "Send Alert Email to Yourself", "type": "main", "index": 0 },
+          { "node": "Re-Queue Failed Emails", "type": "main", "index": 0 },
+          { "node": "Unstick Stuck Processing", "type": "main", "index": 0 }
+        ],
+        []
+      ]
+    },
+    "Reset Daily Send Counters": {
+      "main": [[{ "node": "Write Daily Stats to Sheets", "type": "main", "index": 0 }]]
+    },
+    "Write Daily Stats to Sheets": {
+      "main": [[{ "node": "Append to Analytics Sheet", "type": "main", "index": 0 }]]
+    }
+  },
+
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": ["email-automation", "production", "watchdog"]
+}

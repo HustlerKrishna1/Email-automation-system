@@ -1,0 +1,319 @@
+{
+  "name": "Email Bot — B: Approval Poller → SMTP Send",
+  "nodes": [
+    {
+      "id": "node-schedule",
+      "name": "Poll Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+        }
+      }
+    },
+    {
+      "id": "node-check-daily-limit",
+      "name": "Check Daily Send Limit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [420, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, email_address, daily_send_count, daily_send_limit FROM accounts WHERE is_active=true AND id=1;",
+        "options": {}
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-if-limit-ok",
+      "name": "Under Daily Limit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [640, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "limit-check",
+              "leftValue": "={{ $json[0].daily_send_count < $json[0].daily_send_limit }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-read-approved",
+      "name": "Read Approved Rows from Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [860, 420],
+      "parameters": {
+        "operation": "readRows",
+        "documentId": {
+          "__rl": true,
+          "value": "1hbONbpY1YBOOi1dOIjUkG8khfJbG2E8ojhisGRIDdUA",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "EmailApprovals",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Status",
+              "lookupValue": "APPROVED"
+            }
+          ]
+        },
+        "options": {
+          "returnAllMatches": false,
+          "limit": 10
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "4", "name": "Google Sheets Service Account" }
+      }
+    },
+    {
+      "id": "node-read-edited",
+      "name": "Read EDIT Rows from Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [860, 540],
+      "parameters": {
+        "operation": "readRows",
+        "documentId": {
+          "__rl": true,
+          "value": "1hbONbpY1YBOOi1dOIjUkG8khfJbG2E8ojhisGRIDdUA",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "EmailApprovals",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Status",
+              "lookupValue": "EDIT"
+            }
+          ]
+        },
+        "options": {
+          "returnAllMatches": false,
+          "limit": 10
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "4", "name": "Google Sheets Service Account" }
+      }
+    },
+    {
+      "id": "node-merge-rows",
+      "name": "Merge Approved + Edited",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1080, 480],
+      "parameters": {
+        "mode": "append"
+      }
+    },
+    {
+      "id": "node-split-batches",
+      "name": "Process One at a Time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1300, 480],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "node-determine-body",
+      "name": "Determine Final Email Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 480],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const row = $input.item.json;\n\n// If human edited the body (column 'Edited Body'), use that.\n// Otherwise use the AI draft ('Draft Body').\nconst editedBody = (row['Edited Body'] || '').trim();\nconst draftBody  = (row['Draft Body']  || '').trim();\nconst finalBody  = editedBody !== '' ? editedBody : draftBody;\n\n// Use edited subject if provided, else AI draft subject\nconst editedSubj = (row['Edited Subject'] || '').trim();\nconst draftSubj  = (row['Draft Subject']  || 'Re: ' + (row['Subject'] || '')).trim();\nconst finalSubj  = editedSubj !== '' ? editedSubj : draftSubj;\n\nreturn {\n  json: {\n    to:          row['From'],\n    subject:     finalSubj,\n    body:        finalBody,\n    message_id:  row['Message ID'],\n    sheets_row:  row['_rowNumber'],\n    used_edit:   editedBody !== ''\n  }\n};"
+      }
+    },
+    {
+      "id": "node-if-body-ok",
+      "name": "Body Not Empty?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1740, 480],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "body-check",
+              "leftValue": "={{ ($json.body || '').trim().length > 0 }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-send-email",
+      "name": "Send Email via Gmail SMTP",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1960, 400],
+      "parameters": {
+        "fromEmail": "reddykrishnakrishna548@gmail.com",
+        "toEmail":   "={{ $json.to }}",
+        "subject":   "={{ $json.subject }}",
+        "text":      "={{ $json.body }}",
+        "options": {
+          "allowUnauthorizedCerts": false,
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": { "id": "5", "name": "Gmail SMTP" }
+      }
+    },
+    {
+      "id": "node-wait-between-sends",
+      "name": "Wait 45 Seconds (Rate Limiter)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2180, 400],
+      "parameters": {
+        "resume": "timeInterval",
+        "unit": "seconds",
+        "value": 45
+      }
+    },
+    {
+      "id": "node-mark-sent-db",
+      "name": "Mark Sent in DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2400, 400],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE email_logs SET status='sent', sent_at=NOW(), final_body=$2, approval_status='SENT' WHERE message_id=$1; UPDATE accounts SET daily_send_count=daily_send_count+1 WHERE id=1;",
+        "options": {
+          "queryParams": "={{ [$json.message_id, $json.body] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-update-sheet-sent",
+      "name": "Update Sheet — Mark SENT",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [2620, 400],
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1hbONbpY1YBOOi1dOIjUkG8khfJbG2E8ojhisGRIDdUA",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "EmailApprovals",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status":   "SENT",
+            "Sent At":  "={{ new Date().toISOString() }}"
+          }
+        },
+        "where": {
+          "values": [
+            { "column": "Message ID", "value": "={{ $('Determine Final Email Body').item.json.message_id }}" }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "4", "name": "Google Sheets Service Account" }
+      }
+    },
+    {
+      "id": "node-back-to-batch",
+      "name": "Back to Batch Loop",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2840, 400],
+      "parameters": {}
+    }
+  ],
+
+  "connections": {
+    "Poll Every 5 Minutes": {
+      "main": [[{ "node": "Check Daily Send Limit", "type": "main", "index": 0 }]]
+    },
+    "Check Daily Send Limit": {
+      "main": [[{ "node": "Under Daily Limit?", "type": "main", "index": 0 }]]
+    },
+    "Under Daily Limit?": {
+      "main": [
+        [],
+        [
+          { "node": "Read Approved Rows from Sheets", "type": "main", "index": 0 },
+          { "node": "Read EDIT Rows from Sheets", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Read Approved Rows from Sheets": {
+      "main": [[{ "node": "Merge Approved + Edited", "type": "main", "index": 0 }]]
+    },
+    "Read EDIT Rows from Sheets": {
+      "main": [[{ "node": "Merge Approved + Edited", "type": "main", "index": 1 }]]
+    },
+    "Merge Approved + Edited": {
+      "main": [[{ "node": "Process One at a Time", "type": "main", "index": 0 }]]
+    },
+    "Process One at a Time": {
+      "main": [[{ "node": "Determine Final Email Body", "type": "main", "index": 0 }]]
+    },
+    "Determine Final Email Body": {
+      "main": [[{ "node": "Body Not Empty?", "type": "main", "index": 0 }]]
+    },
+    "Body Not Empty?": {
+      "main": [
+        [],
+        [{ "node": "Send Email via Gmail SMTP", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Email via Gmail SMTP": {
+      "main": [[{ "node": "Wait 45 Seconds (Rate Limiter)", "type": "main", "index": 0 }]]
+    },
+    "Wait 45 Seconds (Rate Limiter)": {
+      "main": [[{ "node": "Mark Sent in DB", "type": "main", "index": 0 }]]
+    },
+    "Mark Sent in DB": {
+      "main": [[{ "node": "Update Sheet — Mark SENT", "type": "main", "index": 0 }]]
+    },
+    "Update Sheet — Mark SENT": {
+      "main": [[{ "node": "Back to Batch Loop", "type": "main", "index": 0 }]]
+    }
+  },
+
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": ["email-automation", "production"]
+}

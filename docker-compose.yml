@@ -1,0 +1,121 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Zero-Cost Email Automation System — Docker Compose
+# Optimized for 8 GB RAM (Intel i5-1235U)
+# ═══════════════════════════════════════════════════════════════════════════════
+version: "3.8"
+
+services:
+
+  # ─── PostgreSQL — State DB ───────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: email_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       email_automation
+      POSTGRES_USER:     n8n_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    # 8 GB RAM optimized — keep Postgres lean
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n_user -d email_automation"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ─── n8n — Workflow Orchestration ────────────────────────────────────────────
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Auth
+      N8N_BASIC_AUTH_ACTIVE:      "true"
+      N8N_BASIC_AUTH_USER:        admin
+      N8N_BASIC_AUTH_PASSWORD:    ${N8N_PASSWORD}
+
+      # Database (n8n stores its own workflow data in Postgres)
+      DB_TYPE:                    postgresdb
+      DB_POSTGRESDB_HOST:         postgres
+      DB_POSTGRESDB_PORT:         5432
+      DB_POSTGRESDB_DATABASE:     email_automation
+      DB_POSTGRESDB_USER:         n8n_user
+      DB_POSTGRESDB_PASSWORD:     ${POSTGRES_PASSWORD}
+
+      # Performance — critical for 8 GB RAM
+      N8N_EXECUTIONS_DATA_MAX_AGE:      168   # Prune execution logs older than 7 days
+      N8N_EXECUTIONS_DATA_PRUNE:        "true"
+      N8N_EXECUTIONS_PROCESS:           main  # Run in main process (saves ~200 MB vs separate)
+      NODE_OPTIONS:                     --max-old-space-size=512
+
+      # Timezone & URLs
+      GENERIC_TIMEZONE:           America/New_York
+      WEBHOOK_URL:                http://localhost:5678/
+      N8N_LOG_LEVEL:              info
+
+      # Groq API key (injected as env so it's available in Function nodes)
+      GROQ_API_KEY:               ${GROQ_API_KEY}
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./business_context.json:/data/business_context.json:ro
+      - ./n8n-workflows:/data/workflows:ro
+    ports:
+      - "5678:5678"
+    # 8 GB RAM hard cap — leaves room for OS + browser
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ─── Ollama — Offline LLM Fallback (CPU-only, 8B model) ─────────────────────
+  # OPTIONAL — only start this if you want offline fallback
+  # Run: docker compose --profile offline up -d
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    profiles: ["offline"]            # Only starts with: docker compose --profile offline up
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    # 8 GB RAM: Llama 3 8B Q4 needs ~5 GB. Only run when needed.
+    deploy:
+      resources:
+        limits:
+          memory: 5G
+    # After first start, pull the model:
+    # docker exec ollama ollama pull llama3:8b
+
+volumes:
+  pg_data:
+  n8n_data:
+  ollama_data:
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# USAGE:
+#   Normal mode:    docker compose up -d
+#   With Ollama:    docker compose --profile offline up -d
+#   View logs:      docker compose logs -f n8n
+#   Stop all:       docker compose down
+#   Full reset:     docker compose down -v   ← DELETES ALL DATA
+# ═══════════════════════════════════════════════════════════════════════════════

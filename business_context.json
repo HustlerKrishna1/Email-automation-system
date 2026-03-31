@@ -1,0 +1,91 @@
+{
+  "_instructions": "Fill in every field below with your real business details. This file is your AI's memory — the richer the detail, the better the replies.",
+
+  "company_name": "Krisna automation 24/7",
+  "founder_name": "Krishna",
+  "industry": "B2B SaaS",
+  "website": "https://yourwebsite.com",
+  "reply_email": "******************.com",
+
+  "tone": {
+    "style": "Professional yet warm, concise, no fluff",
+    "avoid": ["hollow phrases like 'Hope this finds you well'", "jargon", "overpromising"],
+    "max_words": 150,
+    "sign_off": "Best regards,\nKrishna\nFounder, Your Company Name"
+  },
+
+  "products": [
+    {
+      "name": "Product Pro",
+      "price": "$99/month",
+      "description": "Full-featured plan with all integrations",
+      "trial": "30-day money-back guarantee"
+    },
+    {
+      "name": "Product Free",
+      "price": "Free forever",
+      "description": "Core features, up to 3 projects",
+      "trial": "No credit card required"
+    }
+  ],
+
+  "faqs": [
+    {
+      "question": "Do you offer a free trial?",
+      "answer": "Yes — our Free plan is free forever with no credit card needed. Pro plans come with a 30-day money-back guarantee."
+    },
+    {
+      "question": "What is your refund policy?",
+      "answer": "30-day money-back guarantee on all paid plans, no questions asked."
+    },
+    {
+      "question": "How do I get started?",
+      "answer": "Simply sign up at our website — you can be up and running in under 5 minutes."
+    },
+    {
+      "question": "Do you offer custom plans / enterprise pricing?",
+      "answer": "Yes! Reply to this email and I'll personally put together a custom quote for your team."
+    },
+    {
+      "question": "Is there a mobile app?",
+      "answer": "Our web app is fully responsive. Native iOS and Android apps are on our roadmap for Q3."
+    }
+  ],
+
+  "never_do": [
+    "Never promise features that don't exist yet",
+    "Never mention competitors by name",
+    "Never share pricing that differs from what's listed above",
+    "Never make legal commitments or SLA promises",
+    "Never share internal roadmap dates as confirmed"
+  ],
+
+  "escalate_to_human_if": [
+    "Mentions legal action or threats",
+    "Asks for refund amount over $500",
+    "Mentions data breach or security concern",
+    "Is a journalist or press inquiry",
+    "Mentions a partner or investor relationship"
+  ],
+
+  "do_not_reply_to_addresses": [
+    "no-reply@",
+    "noreply@",
+    "mailer-daemon@",
+    "postmaster@",
+    "bounce@",
+    "do-not-reply@",
+    "notifications@",
+    "alerts@",
+    "newsletter@",
+    "updates@"
+  ],
+
+  "our_email_addresses": [
+    "***************.com"
+  ],
+
+  "working_hours_note": "If you receive this outside business hours (Mon-Fri 9am-6pm EST), Krishna will personally follow up during business hours.",
+
+  "social_proof": "Trusted by 500+ teams across in usa"
+}

@@ -1,0 +1,433 @@
+{
+  "name": "Email Bot — A: Ingest → Classify → Draft → Sheets",
+  "nodes": [
+    {
+      "id": "node-imap-trigger",
+      "name": "Watch Gmail Inbox",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "parameters": {
+        "mailbox": "INBOX",
+        "action": "read",
+        "downloadAttachments": false,
+        "options": {
+          "allowUnauthorizedCerts": false
+        }
+      },
+      "credentials": {
+        "imap": {
+          "id": "1",
+          "name": "Gmail IMAP"
+        }
+      }
+    },
+    {
+      "id": "node-extract",
+      "name": "Extract & Sanitize Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ── Extract & normalize email fields ──\nconst email = $input.item.json;\n\nconst messageId = (\n  email.headers?.['message-id']?.[0] ||\n  email.messageId ||\n  `fallback-${Date.now()}-${Math.random().toString(36).substr(2,9)}`\n).replace(/[<>]/g, '').trim();\n\nconst xAutoSubmitted = (email.headers?.['x-auto-submitted']?.[0] || '').toLowerCase();\nconst autoSubmitted   = (email.headers?.['auto-submitted']?.[0]   || '').toLowerCase();\nconst precedence      = (email.headers?.['precedence']?.[0]        || '').toLowerCase();\n\nconst isAutoReply = xAutoSubmitted.includes('auto') ||\n                    autoSubmitted.includes('auto')   ||\n                    precedence === 'bulk'             ||\n                    precedence === 'junk';\n\nconst fromRaw = email.from?.value?.[0] || {};\n\nreturn {\n  json: {\n    message_id:   messageId,\n    thread_id:    email.headers?.['references']?.[0]?.split(' ')[0] || messageId,\n    from_address: fromRaw.address || email.from || '',\n    from_name:    fromRaw.name    || '',\n    to_addresses: (email.to?.value || []).map(t => t.address),\n    subject:      (email.subject || '').trim(),\n    body_text:    (email.text || email.textAsHtml || '').slice(0, 8000),\n    received_at:  email.date || new Date().toISOString(),\n    is_auto_reply: isAutoReply,\n    raw_headers:  JSON.stringify(email.headers || {})\n  }\n};"
+      }
+    },
+    {
+      "id": "node-dedup-check",
+      "name": "Check Already Processed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [640, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, status FROM email_logs WHERE message_id = $1 LIMIT 1;",
+        "options": {
+          "queryParams": "={{ [$json.message_id] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "id": "node-if-duplicate",
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [860, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "id": "dup-check",
+              "leftValue": "={{ $json[0] !== undefined }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-insert-initial",
+      "name": "Insert Initial Record",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1080, 420],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO email_logs (message_id, thread_id, from_address, subject, body_text, received_at, status) VALUES ($1,$2,$3,$4,$5,$6,'processing') ON CONFLICT (message_id) DO NOTHING RETURNING id;",
+        "options": {
+          "queryParams": "={{ [$('Extract & Sanitize Email').item.json.message_id, $('Extract & Sanitize Email').item.json.thread_id, $('Extract & Sanitize Email').item.json.from_address, $('Extract & Sanitize Email').item.json.subject, $('Extract & Sanitize Email').item.json.body_text, $('Extract & Sanitize Email').item.json.received_at] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "2",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "id": "node-safety-valve",
+      "name": "Safety Valve — Anti-Loop",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 420],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ══════════════════════════════════════════════\n// SAFETY VALVE — Multi-layer anti-loop guard\n// ══════════════════════════════════════════════\nconst email = $('Extract & Sanitize Email').item.json;\nconst fromAddr = (email.from_address || '').toLowerCase();\nconst subject  = (email.subject || '').toLowerCase();\nlet   headers  = {};\ntry { headers = JSON.parse(email.raw_headers || '{}'); } catch(e) {}\n\n// Layer 1: Auto-reply headers\nconst autoHdrKeys = ['x-auto-submitted','auto-submitted','x-autoreply','x-autoresponder'];\nconst hasAutoHdr  = autoHdrKeys.some(h => headers[h] && !String(headers[h][0]).includes('no'));\n\n// Layer 2: Bot addresses\nconst botPatterns = ['no-reply@','noreply@','do-not-reply@','donotreply@',\n  'mailer-daemon@','postmaster@','bounce@','bounces@','auto-reply@',\n  'autoreply@','notifications@','alerts@','support-noreply@'];\nconst isBotAddr = botPatterns.some(p => fromAddr.includes(p));\n\n// Layer 3: Auto-reply subject\nconst autoSubjects = ['auto-reply:','automatic reply:','out of office:',\n  'autoreply:','[auto]','auto response:','away message:',\n  'delivery status:','undeliverable:','failed delivery','mail delivery failed'];\nconst hasAutoSubj = autoSubjects.some(p => subject.startsWith(p) || subject.includes(p));\n\n// Layer 4: Our own addresses (UPDATE THESE!)\nconst ourAddresses = ['reddykrishnakrishna548@gmail.com'];\nconst isOurAddr = ourAddresses.some(a => fromAddr.includes(a));\n\n// Layer 5: is_auto_reply flag from extraction step\nconst wasAutoReply = email.is_auto_reply === true;\n\nconst isLoop = hasAutoHdr || isBotAddr || hasAutoSubj || isOurAddr || wasAutoReply;\nconst loopReason = [\n  hasAutoHdr   && 'auto_header',\n  isBotAddr    && 'bot_address',\n  hasAutoSubj  && 'auto_subject_prefix',\n  isOurAddr    && 'our_own_address',\n  wasAutoReply && 'auto_reply_flag'\n].filter(Boolean).join(', ');\n\nreturn { json: { ...email, is_loop: isLoop, loop_reason: loopReason || 'none' } };"
+      }
+    },
+    {
+      "id": "node-if-loop",
+      "name": "Is Loop / Bot?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1520, 420],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "loop-check",
+              "leftValue": "={{ $json.is_loop }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-mark-loop",
+      "name": "Mark Loop Blocked",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1740, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE email_logs SET status='loop_blocked', last_error=$2 WHERE message_id=$1;",
+        "options": {
+          "queryParams": "={{ [$json.message_id, 'Loop blocked: ' + $json.loop_reason] }}"
+        }
+      },
+      "credentials": {
+        "postgres": { "id": "2", "name": "PostgreSQL Local" }
+      }
+    },
+    {
+      "id": "node-groq-classify",
+      "name": "Groq — Classify Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 540],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama3-70b-8192\",\n  \"temperature\": 0.1,\n  \"max_tokens\": 250,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an email classifier. Return ONLY valid JSON with exactly these keys: category (spam|inquiry|urgent|lead|newsletter|other), confidence (0.0-1.0), needs_reply (boolean), sentiment_score (-1.0 to 1.0), reasoning (string). No other text.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Classify this email:\\nFrom: {{ $json.from_address }}\\nSubject: {{ $json.subject }}\\nBody (first 1500 chars): {{ $json.body_text.slice(0,1500) }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": { "id": "3", "name": "Groq API Key" }
+      }
+    },
+    {
+      "id": "node-parse-classify",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1960, 540],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = $input.item.json;\nconst emailData = $('Safety Valve — Anti-Loop').item.json;\n\nlet parsed;\ntry {\n  const content = raw.choices?.[0]?.message?.content || '{}';\n  parsed = JSON.parse(content);\n} catch(e) {\n  parsed = { category:'inquiry', confidence:0.5, needs_reply:true, sentiment_score:0, reasoning:'json_parse_error' };\n}\n\nconst usage = raw.usage || {};\n\nreturn {\n  json: {\n    ...emailData,\n    category:        parsed.category       || 'inquiry',\n    confidence:      parseFloat(parsed.confidence) || 0.5,\n    needs_reply:     parsed.needs_reply !== false,\n    sentiment_score: parseFloat(parsed.sentiment_score) || 0,\n    classify_reason: parsed.reasoning      || '',\n    token_classify: {\n      prompt_tokens:     usage.prompt_tokens     || 0,\n      completion_tokens: usage.completion_tokens || 0,\n      total_tokens:      usage.total_tokens      || 0\n    }\n  }\n};"
+      }
+    },
+    {
+      "id": "node-if-needs-reply",
+      "name": "Needs Reply?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2180, 540],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "reply-check",
+              "leftValue": "={{ $json.needs_reply }}",
+              "rightValue": false,
+              "operator": { "type": "boolean", "operation": "false" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-mark-no-reply",
+      "name": "Mark No Reply Needed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2400, 420],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE email_logs SET status='no_reply_needed', category=$2, sentiment_score=$3, confidence=$4 WHERE message_id=$1;",
+        "options": {
+          "queryParams": "={{ [$json.message_id, $json.category, $json.sentiment_score, $json.confidence] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-thread-history",
+      "name": "Load Thread History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2400, 660],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT from_address, subject, body_text, draft_body, sent_at FROM email_logs WHERE thread_id=$1 AND status='sent' ORDER BY received_at DESC LIMIT 3;",
+        "options": {
+          "queryParams": "={{ [$json.thread_id] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-build-prompt",
+      "name": "Build Draft Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2620, 660],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const email = $('Parse Classification').item.json;\nconst threadRows = $input.all();\n\nconst historyText = threadRows.length > 0\n  ? threadRows.map((r,i) => `[Prior reply ${i+1}] ${r.json.body_text?.slice(0,300) || ''}`).join('\\n---\\n')\n  : 'No prior replies in this thread.';\n\n// Business context — hardcoded summary (matches business_context.json)\n// In production: mount the JSON file and read it here\nconst bizContext = [\n  'Company: Your Company Name | Founder: Krishna | Site: yourwebsite.com',\n  'Products: Pro ($99/mo), Free (forever, no CC)',\n  'Tone: Professional, warm, concise — NEVER more than 150 words',\n  'Sign-off: Best regards,\\\\nKrishna\\\\nFounder, Your Company Name',\n  'Never mention competitors. Never promise unannounced features.',\n  'If escalation needed (legal threats, data breach, press): say you will personally follow up.'\n].join('\\n');\n\nreturn {\n  json: {\n    ...email,\n    biz_context:   bizContext,\n    thread_history: historyText\n  }\n};"
+      }
+    },
+    {
+      "id": "node-groq-draft",
+      "name": "Groq — Generate Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2840, 660],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama3-70b-8192\",\n  \"temperature\": 0.4,\n  \"max_tokens\": 600,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{ $json.biz_context }}\\n\\nYou are a professional email reply assistant. Your job: draft a reply that sounds like Krishna wrote it personally.\\n\\nRules:\\n- Max 150 words\\n- No hollow openers like 'Hope this finds you well'\\n- Be direct, warm, specific\\n- Always end with the sign-off\\n\\nReturn ONLY valid JSON with keys: draft_subject, draft_body (use \\\\n for newlines), sentiment_score (-1.0 to 1.0), confidence (0.0-1.0), reasoning (your thought process). No other text outside the JSON.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"THREAD HISTORY:\\n{{ $json.thread_history }}\\n\\n━━━ NEW EMAIL TO REPLY TO ━━━\\nFrom: {{ $json.from_name }} <{{ $json.from_address }}>\\nSubject: {{ $json.subject }}\\nCategory: {{ $json.category }} (confidence: {{ $json.confidence }})\\nBody:\\n{{ $json.body_text.slice(0,2000) }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 20000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 3000
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": { "id": "3", "name": "Groq API Key" }
+      }
+    },
+    {
+      "id": "node-parse-draft",
+      "name": "Parse Draft Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3060, 660],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = $input.item.json;\nconst emailData = $('Build Draft Prompt').item.json;\n\nlet parsed;\ntry {\n  const content = raw.choices?.[0]?.message?.content || '{}';\n  parsed = JSON.parse(content);\n} catch(e) {\n  parsed = {\n    draft_subject: 'Re: ' + emailData.subject,\n    draft_body: 'Hi,\\n\\nThank you for reaching out. I will personally review this and get back to you shortly.\\n\\nBest regards,\\nKrishna',\n    sentiment_score: 0,\n    confidence: 0.3,\n    reasoning: 'json_parse_error — used fallback'\n  };\n}\n\nconst usage = raw.usage || {};\nconst tokenUsage = JSON.stringify({\n  classify: emailData.token_classify,\n  draft: {\n    prompt_tokens:     usage.prompt_tokens     || 0,\n    completion_tokens: usage.completion_tokens || 0,\n    total_tokens:      usage.total_tokens      || 0\n  },\n  total_tokens: (emailData.token_classify?.total_tokens || 0) + (usage.total_tokens || 0)\n});\n\nreturn {\n  json: {\n    ...emailData,\n    draft_subject:  parsed.draft_subject  || 'Re: ' + emailData.subject,\n    draft_body:     parsed.draft_body     || '',\n    draft_reasoning: parsed.reasoning     || '',\n    token_usage_str: tokenUsage\n  }\n};"
+      }
+    },
+    {
+      "id": "node-update-draft-db",
+      "name": "Save Draft to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [3280, 660],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE email_logs SET category=$2, sentiment_score=$3, confidence=$4, draft_subject=$5, draft_body=$6, draft_reasoning=$7, token_usage=$8::jsonb, approval_status='PENDING', status='awaiting_approval' WHERE message_id=$1;",
+        "options": {
+          "queryParams": "={{ [$json.message_id, $json.category, $json.sentiment_score, $json.confidence, $json.draft_subject, $json.draft_body, $json.draft_reasoning, $json.token_usage_str] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    },
+    {
+      "id": "node-sheets-append",
+      "name": "Add to Google Sheets for Approval",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [3500, 660],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1hbONbpY1YBOOi1dOIjUkG8khfJbG2E8ojhisGRIDdUA",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "EmailApprovals",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp":        "={{ new Date().toISOString() }}",
+            "From":             "={{ $json.from_address }}",
+            "From Name":        "={{ $json.from_name }}",
+            "Subject":          "={{ $json.subject }}",
+            "Category":         "={{ $json.category }}",
+            "Confidence":       "={{ $json.confidence }}",
+            "Draft Subject":    "={{ $json.draft_subject }}",
+            "Draft Body":       "={{ $json.draft_body }}",
+            "Edited Body":      "",
+            "Status":           "PENDING",
+            "Message ID":       "={{ $json.message_id }}",
+            "AI Reasoning":     "={{ $json.draft_reasoning }}",
+            "Sentiment":        "={{ $json.sentiment_score }}"
+          }
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "4", "name": "Google Sheets Service Account" }
+      }
+    },
+    {
+      "id": "node-update-lead",
+      "name": "Upsert Lead Record",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [3720, 660],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (account_id, email_address, name, domain, last_seen_at, email_count, avg_sentiment, stage) VALUES (1, $1, $2, $3, NOW(), 1, $4, CASE WHEN $4 > 0.5 THEN 'warm' ELSE 'cold' END) ON CONFLICT (account_id, email_address) DO UPDATE SET last_seen_at=NOW(), email_count=leads.email_count+1, avg_sentiment=ROUND(((leads.avg_sentiment * leads.email_count + $4) / (leads.email_count + 1))::numeric, 3), stage=CASE WHEN leads.avg_sentiment > 0.6 THEN 'hot' WHEN leads.avg_sentiment > 0.2 THEN 'warm' ELSE leads.stage END;",
+        "options": {
+          "queryParams": "={{ [$json.from_address, $json.from_name, $json.from_address.split('@')[1] || '', $json.sentiment_score] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "2", "name": "PostgreSQL Local" } }
+    }
+  ],
+
+  "connections": {
+    "Watch Gmail Inbox": {
+      "main": [[{ "node": "Extract & Sanitize Email", "type": "main", "index": 0 }]]
+    },
+    "Extract & Sanitize Email": {
+      "main": [[{ "node": "Check Already Processed", "type": "main", "index": 0 }]]
+    },
+    "Check Already Processed": {
+      "main": [[{ "node": "Is Duplicate?", "type": "main", "index": 0 }]]
+    },
+    "Is Duplicate?": {
+      "main": [
+        [],
+        [{ "node": "Insert Initial Record", "type": "main", "index": 0 }]
+      ]
+    },
+    "Insert Initial Record": {
+      "main": [[{ "node": "Safety Valve — Anti-Loop", "type": "main", "index": 0 }]]
+    },
+    "Safety Valve — Anti-Loop": {
+      "main": [[{ "node": "Is Loop / Bot?", "type": "main", "index": 0 }]]
+    },
+    "Is Loop / Bot?": {
+      "main": [
+        [{ "node": "Mark Loop Blocked", "type": "main", "index": 0 }],
+        [{ "node": "Groq — Classify Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Groq — Classify Email": {
+      "main": [[{ "node": "Parse Classification", "type": "main", "index": 0 }]]
+    },
+    "Parse Classification": {
+      "main": [[{ "node": "Needs Reply?", "type": "main", "index": 0 }]]
+    },
+    "Needs Reply?": {
+      "main": [
+        [{ "node": "Mark No Reply Needed", "type": "main", "index": 0 }],
+        [{ "node": "Load Thread History", "type": "main", "index": 0 }]
+      ]
+    },
+    "Load Thread History": {
+      "main": [[{ "node": "Build Draft Prompt", "type": "main", "index": 0 }]]
+    },
+    "Build Draft Prompt": {
+      "main": [[{ "node": "Groq — Generate Draft", "type": "main", "index": 0 }]]
+    },
+    "Groq — Generate Draft": {
+      "main": [[{ "node": "Parse Draft Response", "type": "main", "index": 0 }]]
+    },
+    "Parse Draft Response": {
+      "main": [[{ "node": "Save Draft to DB", "type": "main", "index": 0 }]]
+    },
+    "Save Draft to DB": {
+      "main": [[{ "node": "Add to Google Sheets for Approval", "type": "main", "index": 0 }]]
+    },
+    "Add to Google Sheets for Approval": {
+      "main": [[{ "node": "Upsert Lead Record", "type": "main", "index": 0 }]]
+    }
+  },
+
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "errorWorkflow": ""
+  },
+  "tags": ["email-automation", "production"]
+}
