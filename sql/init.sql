@@ -189,9 +189,9 @@ ORDER BY day DESC;
 -- UPDATE THIS with your real email before running!
 INSERT INTO accounts (account_name, email_address, provider,
     imap_host, smtp_host, username, credential_ref, daily_send_limit)
-VALUES ('Primary Gmail', 'reddykrishnakrishna548@gmail.com', 'gmail',
+VALUES ('Primary Gmail', 'your-email@gmail.com', 'gmail',
     'imap.gmail.com', 'smtp.gmail.com',
-    'reddykrishnakrishna548@gmail.com', 'Gmail App Password', 450)
+    'your-email@gmail.com', 'Gmail App Password', 450)
 ON CONFLICT (email_address) DO NOTHING;
 
 -- ═══════════════════════════════════════════════════════════════════════════

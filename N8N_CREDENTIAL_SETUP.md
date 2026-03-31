@@ -8,7 +8,7 @@
 | Field | Value |
 |---|---|
 | **Credential Name** | `Gmail IMAP` |
-| **User** | `reddykrishnakrishna548@gmail.com` |
+| **User** | `your-email@gmail.com` |
 | **Password** | `ihmpvcamfrpercru` |
 | **Host** | `imap.gmail.com` |
 | **Port** | `993` |
@@ -22,7 +22,7 @@
 | Field | Value |
 |---|---|
 | **Credential Name** | `Gmail SMTP` |
-| **User** | `reddykrishnakrishna548@gmail.com` |
+| **User** | `your-email@gmail.com` |
 | **Password** | `ihmpvcamfrpercru` |
 | **Host** | `smtp.gmail.com` |
 | **Port** | `587` |
@@ -62,14 +62,15 @@
 | Field | Value |
 |---|---|
 | **Credential Name** | `Google Sheets Service Account` |
-| **Service Account Email** | `n8n-sheets@email-automation-491916.iam.gserviceaccount.com` |
-| **Private Key** | *(paste full contents of `email-automation-491916-service-account.json`)* |
+| **Service Account Email** | *(your service account email from Google Cloud Console)* |
+| **Private Key** | *(paste full contents of your downloaded service account JSON key file)* |
 
 **How to add the private key in n8n:**
-1. Open `email-automation-system/email-automation-491916-service-account.json`
-2. Copy the entire JSON content
-3. In n8n credential → paste the full JSON into the **"Service Account JSON"** field
+1. Download your real service account JSON key from **Google Cloud Console → IAM & Admin → Service Accounts → your account → Keys → Add Key → JSON**
+2. Open that downloaded JSON file
+3. In n8n credential → paste the full JSON content into the **"Service Account JSON"** field
    *(n8n will extract the private key automatically)*
+4. Use `service-account.example.json` in this repo only as a reference for the expected JSON format
 
 ---
 
@@ -96,7 +97,7 @@ https://docs.google.com/spreadsheets/d/1hbONbpY1YBOOi1dOIjUkG8khfJbG2E8ojhisGRID
 ---
 
 ## Quick Test After Activation
-1. Send an email TO `reddykrishnakrishna548@gmail.com` from any other address
+1. Send an email TO `your-email@gmail.com` from any other address
 2. Wait up to 60 seconds (IMAP poll interval)
 3. Watch n8n Executions tab for the workflow running
 4. Check Google Sheet — EmailApprovals tab should show a new PENDING row

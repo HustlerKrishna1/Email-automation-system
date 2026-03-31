@@ -102,8 +102,8 @@
       "typeVersion": 2.1,
       "position": [1080, 280],
       "parameters": {
-        "fromEmail": "reddykrishnakrishna548@gmail.com",
-        "toEmail":   "reddykrishnakrishna548@gmail.com",
+        "fromEmail": "your-email@gmail.com",
+        "toEmail":   "your-email@gmail.com",
         "subject":   "🚨 Email Bot Alert — Action Required",
         "text":      "={{ $json.alert_body }}",
         "options": {}
