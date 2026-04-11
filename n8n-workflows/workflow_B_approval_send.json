@@ -173,7 +173,7 @@
       "typeVersion": 2.1,
       "position": [1960, 400],
       "parameters": {
-        "fromEmail": "reddykrishnakrishna548@gmail.com",
+        "fromEmail": "your-email@gmail.com",
         "toEmail":   "={{ $json.to }}",
         "subject":   "={{ $json.subject }}",
         "text":      "={{ $json.body }}",

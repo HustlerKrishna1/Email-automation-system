@@ -14,7 +14,7 @@
 5. Click **Generate** → Copy the 16-character code (shows once!)
 
 **What you'll enter in setup.sh:**
-- Gmail address: `reddykrishnakrishna548@gmail.com`
+- Gmail address: `your-email@gmail.com`
 - App Password: `xxxx xxxx xxxx xxxx`
 
 ---

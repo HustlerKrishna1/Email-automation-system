@@ -1,0 +1,23 @@
+# Environment variables — never commit real credentials
+.env
+.env.local
+.env.*.local
+
+# Google service account keys — use the example template instead
+*service-account*.json
+*-service-account.json
+service-account.json
+# Allow the example/template files to be committed
+!*.example.json
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.bak
+
+# Docker volumes (if mounted locally)
+pg_data/
+n8n_data/
+ollama_data/

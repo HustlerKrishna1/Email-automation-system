@@ -152,7 +152,7 @@ if [[ -f "$BIZ_FILE" ]]; then
   # Replace placeholder values
   sed -i.bak \
     -e "s/YOUR COMPANY NAME/${YOUR_COMPANY:-Your Company}/g" \
-    -e "s/reddykrishnakrishna548@gmail.com/${GMAIL_ADDRESS:-reddykrishnakrishna548@gmail.com}/g" \
+    -e "s/your-email@gmail.com/${GMAIL_ADDRESS:-your-email@gmail.com}/g" \
     -e "s/Krishna/${YOUR_NAME:-Krishna}/g" \
     -e "s/yourwebsite.com/yourwebsite.com/g" \
     "$BIZ_FILE"
@@ -167,7 +167,7 @@ WORKFLOWS_DIR="$PROJECT_DIR/n8n-workflows"
 for f in "$WORKFLOWS_DIR"/*.json; do
   sed -i.bak \
     -e "s/YOUR_SPREADSHEET_ID/${GOOGLE_SHEETS_SPREADSHEET_ID:-YOUR_SPREADSHEET_ID}/g" \
-    -e "s/reddykrishnakrishna548@gmail.com/${GMAIL_ADDRESS:-reddykrishnakrishna548@gmail.com}/g" \
+    -e "s/your-email@gmail.com/${GMAIL_ADDRESS:-your-email@gmail.com}/g" \
     -e "s/YOUR COMPANY/${YOUR_COMPANY:-Your Company}/g" \
     -e "s/Krishna/${YOUR_NAME:-Krishna}/g" \
     "$f"
@@ -180,7 +180,7 @@ header "Step 4: Patching Database Seed Data"
 
 SQL_FILE="$PROJECT_DIR/sql/init.sql"
 sed -i.bak \
-  -e "s/reddykrishnakrishna548@gmail.com/${GMAIL_ADDRESS:-reddykrishnakrishna548@gmail.com}/g" \
+  -e "s/your-email@gmail.com/${GMAIL_ADDRESS:-your-email@gmail.com}/g" \
   "$SQL_FILE"
 rm -f "${SQL_FILE}.bak"
 log "init.sql patched"
